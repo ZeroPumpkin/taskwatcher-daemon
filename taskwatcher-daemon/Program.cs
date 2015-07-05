@@ -154,7 +154,11 @@ namespace taskwatcher_daemon
                                   "where env_task.id in (" + inClause + ") " +
                                   "  and env_task.env_wfc_status_id = env_wfc_status.id " +
                                   "  and env_task.env_release_id = env_release.id";
+                Console.Write("Running query...");
+
                 OracleDataReader reader = cmd.ExecuteReader();
+
+                Console.WriteLine("done");
 
                 while (reader.Read())
                 {
@@ -162,6 +166,12 @@ namespace taskwatcher_daemon
                     t.Value.TaskName = reader.GetString(1);
                     t.Value.TaskStatus = reader.GetString(2);
                     t.Value.TaskRelease = reader.GetString(3);
+                    t.Value.LastUpdated = DateTime.Now;
+
+                    Console.WriteLine("Task ID: " + t.Value.TaskID + ", Task Name: " + t.Value.TaskName + ", Task Status: " + t.Value.TaskStatus +
+                        ", Task Release: " + t.Value.TaskRelease);
+
+                    reader.NextResult();
                 }
 
                 reader.Close();
@@ -181,7 +191,9 @@ namespace taskwatcher_daemon
 
             foreach (Row<ADAITask> row in rows)
             {
-                
+                Console.Write("Updating doc for task " + row.Value.TaskID + "...");
+                await store.StoreAsync<ADAITask>(row.Value);
+                Console.WriteLine("done");
             }
         }
     }
