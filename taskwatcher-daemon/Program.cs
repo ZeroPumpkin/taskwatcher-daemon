@@ -49,6 +49,9 @@ namespace taskwatcher_daemon
                 Timeout = TimeSpan.FromMilliseconds(System.Threading.Timeout.Infinite)
             };
 
+            MyCouchClientBootstrapper bootstrapper = new MyCouchClientBootstrapper();
+            bootstrapper.DbConnectionFn = new Func<ConnectionInfo, IDbConnection>(ProxyDbConnection);
+
             using (MyCouchClient couch = new MyCouchClient(connInfo))
             {
                 // Create the database if it does not exist
@@ -195,6 +198,11 @@ namespace taskwatcher_daemon
                 await store.StoreAsync<ADAITask>(row.Value);
                 Console.WriteLine("done");
             }
+        }
+
+        static IDbConnection ProxyDbConnection(ConnectionInfo connInfo)
+        {
+            return new ProxyDbConnection(connInfo);
         }
     }
 }
