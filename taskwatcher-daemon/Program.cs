@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Oracle.ManagedDataAccess.Client;
 using MyCouch;
 using MyCouch.Requests;
-using Nito.AsyncEx;
 using Newtonsoft.Json;
 using System.Threading;
 
@@ -23,10 +22,10 @@ namespace taskwatcher_daemon
 
         static void Main(string[] args)
         {
-            AsyncContext.Run(() => MainAsync(args));
+            MainAsync(args);
         }
 
-        static async void MainAsync(string[] args)
+        static void MainAsync(string[] args)
         {
             // Display banner
             Console.WriteLine("╔═══════════════════════════════════════╗");
@@ -52,7 +51,7 @@ namespace taskwatcher_daemon
             using (MyCouchClient couch = new MyCouchClient(connInfo))
             {
                 // Create the database if it does not exist
-                await couch.Database.PutAsync();
+                couch.Database.PutAsync().Wait();
 
                 //using (MyCouchStore store = new MyCouchStore(couch))
                 //{
@@ -118,13 +117,15 @@ namespace taskwatcher_daemon
             }
         }
 
-        static async void WorkTimerCallback(object state)
+        static void WorkTimerCallback(object state)
         {
             MyCouchStore store = (MyCouchStore) state;
 
             Console.Write("Polling tasklist...");
             // Get all docs
-            IEnumerable<Row<ADAITask>> rows = await store.QueryAsync<ADAITask>(new Query("_all_docs"));
+            Task<IEnumerable<Row<ADAITask>>> queryTask = store.QueryAsync<ADAITask>(new Query("_all_docs"));
+            queryTask.Wait();
+            IEnumerable<Row<ADAITask>> rows = queryTask.Result;
 
             Console.WriteLine("done - " + rows.Count() + " tasks fetched");
 
