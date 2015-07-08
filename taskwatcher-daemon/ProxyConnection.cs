@@ -93,7 +93,7 @@ namespace taskwatcher_daemon
             return client;
         }
 
-        public virtual async Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest)
+        public virtual Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest)
         {
             ThrowIfDisposed();
 
@@ -101,24 +101,26 @@ namespace taskwatcher_daemon
 
             using (var message = CreateHttpRequestMessage(httpRequest))
             {
-                var response = await HttpClient.SendAsync(message).ForAwait();
+                Task<HttpResponseMessage> t = HttpClient.SendAsync(message);
+                t.Wait();
+                var response = t.Result;
 
                 if (ShouldFollowResponse(response))
                 {
                     using (var followMessage = CreateHttpRequestMessage(httpRequest))
                     {
                         followMessage.RequestUri = response.Headers.Location;
-                        return await HttpClient.SendAsync(followMessage).ForAwait();
+                        return HttpClient.SendAsync(followMessage);
                     }
                 }
 
                 OnAfterSend(response);
 
-                return response;
+                return t;
             }
         }
 
-        public virtual async Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, CancellationToken cancellationToken)
+        public virtual Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
 
@@ -126,24 +128,26 @@ namespace taskwatcher_daemon
 
             using (var message = CreateHttpRequestMessage(httpRequest))
             {
-                var response = await HttpClient.SendAsync(message, cancellationToken).ForAwait();
+                Task<HttpResponseMessage> t = HttpClient.SendAsync(message, cancellationToken);
+                t.Wait();
+                var response = t.Result;
 
                 if (ShouldFollowResponse(response))
                 {
                     using (var followMessage = CreateHttpRequestMessage(httpRequest))
                     {
                         followMessage.RequestUri = response.Headers.Location;
-                        return await HttpClient.SendAsync(followMessage, cancellationToken).ForAwait();
+                        return HttpClient.SendAsync(followMessage, cancellationToken);
                     }
                 }
 
                 OnAfterSend(response);
 
-                return response;
+                return t;
             }
         }
 
-        public virtual async Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, HttpCompletionOption completionOption)
+        public virtual Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, HttpCompletionOption completionOption)
         {
             ThrowIfDisposed();
 
@@ -151,24 +155,26 @@ namespace taskwatcher_daemon
 
             using (var message = CreateHttpRequestMessage(httpRequest))
             {
-                var response = await HttpClient.SendAsync(message, completionOption).ForAwait();
+                Task<HttpResponseMessage> t = HttpClient.SendAsync(message, completionOption);
+                t.Wait();
+                var response = t.Result;
 
                 if (ShouldFollowResponse(response))
                 {
                     using (var followMessage = CreateHttpRequestMessage(httpRequest))
                     {
                         followMessage.RequestUri = response.Headers.Location;
-                        return await HttpClient.SendAsync(followMessage, completionOption).ForAwait();
+                        return HttpClient.SendAsync(followMessage, completionOption);
                     }
                 }
 
                 OnAfterSend(response);
 
-                return response;
+                return t;
             }
         }
 
-        public virtual async Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, HttpCompletionOption completionOption, CancellationToken cancellationToken)
+        public virtual Task<HttpResponseMessage> SendAsync(HttpRequest httpRequest, HttpCompletionOption completionOption, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
 
@@ -176,20 +182,22 @@ namespace taskwatcher_daemon
 
             using (var message = CreateHttpRequestMessage(httpRequest))
             {
-                var response = await HttpClient.SendAsync(message, completionOption, cancellationToken).ForAwait();
+                Task<HttpResponseMessage> t = HttpClient.SendAsync(message, completionOption, cancellationToken);
+                t.Wait();
+                var response = t.Result;
 
                 if (ShouldFollowResponse(response))
                 {
                     using (var followMessage = CreateHttpRequestMessage(httpRequest))
                     {
                         followMessage.RequestUri = response.Headers.Location;
-                        return await HttpClient.SendAsync(followMessage, completionOption, cancellationToken).ForAwait();
+                        return HttpClient.SendAsync(followMessage, completionOption, cancellationToken);
                     }
                 }
 
                 OnAfterSend(response);
 
-                return response;
+                return t;
             }
         }
 

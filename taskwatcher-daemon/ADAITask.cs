@@ -25,6 +25,7 @@ namespace taskwatcher_daemon
         public ADAITask(int TaskID)
         {
             this.TaskID = TaskID;
+            this._id = TaskID.ToString();
         }
     }
 }

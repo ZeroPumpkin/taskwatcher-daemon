@@ -6,8 +6,10 @@ using System.Threading.Tasks;
 using Oracle.ManagedDataAccess.Client;
 using MyCouch;
 using MyCouch.Requests;
+using MyCouch.Responses;
 using Newtonsoft.Json;
 using System.Threading;
+using System.Diagnostics;
 
 namespace taskwatcher_daemon
 {
@@ -53,8 +55,12 @@ namespace taskwatcher_daemon
 
             using (MyCouchClient couch = new MyCouchClient(connInfo))
             {
+                Console.Write("Checking remote DB...");
+
                 // Create the database if it does not exist
                 couch.Database.PutAsync().Wait();
+
+                Console.WriteLine("exists");
 
                 //using (MyCouchStore store = new MyCouchStore(couch))
                 //{
@@ -63,14 +69,15 @@ namespace taskwatcher_daemon
                 //        Console.Write("Enter task ID: ");
                 //        string taskID = Console.ReadLine();
 
-                //        ADAITask t = await store.GetByIdAsync<ADAITask>(taskID);
+                //        //ADAITask t = await store.GetByIdAsync<ADAITask>(taskID);
 
-                //        Console.WriteLine("Got task document: " + t.TaskID);
+                //        ADAITask t = new ADAITask(Int32.Parse(taskID));
                 //        t.LastUpdated = DateTime.Now;
 
                 //        Console.WriteLine("Storing doc...");
-                //        DocumentHeader head = await store.StoreAsync(JsonConvert.SerializeObject(t).ToString());
-                //        Console.WriteLine("Doc stored: " + head.Id);
+                //        Task<ADAITask> task = store.StoreAsync(t);
+                //        task.Wait();
+                //        Console.WriteLine("Doc stored: " + t._id);
                 //    }
                 //}
 
@@ -125,12 +132,15 @@ namespace taskwatcher_daemon
             MyCouchStore store = (MyCouchStore) state;
 
             Console.Write("Polling tasklist...");
-            // Get all docs
-            Task<IEnumerable<Row<ADAITask>>> queryTask = store.QueryAsync<ADAITask>(new Query("_all_docs"));
-            queryTask.Wait();
-            IEnumerable<Row<ADAITask>> rows = queryTask.Result;
 
-            Console.WriteLine("done - " + rows.Count() + " tasks fetched");
+            // Get all docs
+            Query q = new Query("_all_docs");
+            q.IncludeDocs = true;
+            Task<IEnumerable<Row<string, ADAITask>>> queryTask = store.QueryAsync<string, ADAITask>(q);
+            queryTask.Wait();
+            IEnumerable<Row<string, ADAITask>> rows = queryTask.Result;
+
+            Console.WriteLine("done - " + queryTask.Result.Count() + " tasks fetched");
 
             Console.Write("Connecting to " + DB + "...");
 
@@ -141,41 +151,45 @@ namespace taskwatcher_daemon
                 conn = new OracleConnection(connString);
                 conn.Open();
 
+                // Open session
+                OracleCommand cmdOpenSession = new OracleCommand("e.env_session_intf#.open_session", conn);
+                cmdOpenSession.CommandType = System.Data.CommandType.StoredProcedure;
+                cmdOpenSession.ExecuteNonQuery();
+
                 Console.WriteLine("done");
 
                 string inClause = "";
-                foreach (Row<ADAITask> row in rows)
+                foreach (Row<string, ADAITask> row in rows)
                 {
-                    inClause = inClause + row.Value.TaskID + ",";
+                    inClause = inClause + row.IncludedDoc.TaskID + ",";
                 }
                 inClause = inClause.TrimEnd(',');
 
                 OracleCommand cmd = new OracleCommand();
                 cmd.Connection = conn;
                 cmd.CommandType = System.Data.CommandType.Text;
-                cmd.CommandText = "select env_task.id, env_task.name, env_wfc_status.user_id, env_release.user_id " +
+                cmd.CommandText = "select env_task.id, env_task.name, env_wfc_status.name, env_release.user_id " +
                                   "from e.env_task, e.env_wfc_status, e.env_release " +
                                   "where env_task.id in (" + inClause + ") " +
                                   "  and env_task.env_wfc_status_id = env_wfc_status.id " +
                                   "  and env_task.env_release_id = env_release.id";
                 Console.Write("Running query...");
 
+                Debug.WriteLine(cmd.CommandText);
                 OracleDataReader reader = cmd.ExecuteReader();
 
-                Console.WriteLine("done");
+                Console.WriteLine("done - returned " + reader.RecordsAffected + " rows");
 
                 while (reader.Read())
                 {
-                    Row<ADAITask> t = rows.Where(e => e.Value.TaskID == reader.GetInt32(0)).Single();
-                    t.Value.TaskName = reader.GetString(1);
-                    t.Value.TaskStatus = reader.GetString(2);
-                    t.Value.TaskRelease = reader.GetString(3);
-                    t.Value.LastUpdated = DateTime.Now;
+                    Row<string, ADAITask> t = rows.Where(e => e.IncludedDoc.TaskID == reader.GetInt32(0)).Single();
+                    t.IncludedDoc.TaskName = reader.GetString(1);
+                    t.IncludedDoc.TaskStatus = reader.GetString(2);
+                    t.IncludedDoc.TaskRelease = reader.GetString(3);
+                    t.IncludedDoc.LastUpdated = DateTime.Now;
 
-                    Console.WriteLine("Task ID: " + t.Value.TaskID + ", Task Name: " + t.Value.TaskName + ", Task Status: " + t.Value.TaskStatus +
-                        ", Task Release: " + t.Value.TaskRelease);
-
-                    reader.NextResult();
+                    Debug.WriteLine("Task ID: " + t.IncludedDoc.TaskID + ", Task Name: " + t.IncludedDoc.TaskName + ", Task Status: " + t.IncludedDoc.TaskStatus +
+                        ", Task Release: " + t.IncludedDoc.TaskRelease);
                 }
 
                 reader.Close();
@@ -193,10 +207,10 @@ namespace taskwatcher_daemon
                 }
             }
 
-            foreach (Row<ADAITask> row in rows)
+            foreach (Row<string, ADAITask> row in rows)
             {
-                Console.Write("Updating doc for task " + row.Value.TaskID + "...");
-                await store.StoreAsync<ADAITask>(row.Value);
+                Console.Write("Updating doc for task " + row.IncludedDoc.TaskID + "...");
+                store.StoreAsync<ADAITask>(row.IncludedDoc).Wait();
                 Console.WriteLine("done");
             }
         }
