@@ -15,12 +15,14 @@ namespace taskwatcher_daemon
 {
     class Program
     {
+        const int TIMER_PERIOD = 30 * 1000 * 60;
         const string DB = "dev1.avaloq";
 
         static Timer workTimer = null;
         static string connString = null;
         static string username = null;
         static string password = null;
+        static ChangeObserver changeObserver = null;
 
         static void Main(string[] args)
         {
@@ -81,24 +83,37 @@ namespace taskwatcher_daemon
                 //    }
                 //}
 
+                // First get the changes feed to get the last seq nr
+                GetChangesRequest getChangesRequest = new GetChangesRequest
+                {
+                    Feed = ChangesFeed.Normal
+                };
+
+                Task<ChangesResponse> changesTask = couch.Changes.GetAsync(getChangesRequest);
+                changesTask.Wait();
+                string lastSeqNr = changesTask.Result.LastSeq;
+
                 MyCouchStore store = new MyCouchStore(couch);
 
-                // Start timer - callback is called immediately and then every 10 minutes thereafter
-                workTimer = new Timer(WorkTimerCallback, store, 0, 1 * 1000 * 60);
+                // Start timer - callback is called immediately
+                workTimer = new Timer(WorkTimerCallback, store, 0, TIMER_PERIOD);
+                
+                // Now start continuous observation using the last seq nr
+                getChangesRequest = new GetChangesRequest
+                {
+                    Feed = ChangesFeed.Continuous,
+                    Since = lastSeqNr
+                };
+                CancellationToken cancellationToken = new CancellationToken();
+                IObservable<string> changes = couch.Changes.ObserveContinuous(getChangesRequest, cancellationToken);
 
-                //GetChangesRequest getChangesRequest = new GetChangesRequest
-                //{
-                //    Feed = ChangesFeed.Continuous
-                //};
-
-                //CancellationToken cancellationToken = new CancellationToken();
-                //IObservable<string> changes = couch.Changes.ObserveContinuous(getChangesRequest, cancellationToken);
-
-                //changes.Subscribe(this);
+                changeObserver = new ChangeObserver(workTimer, TIMER_PERIOD);
+                changes.Subscribe(changeObserver);
+                Debug.WriteLine("Started continuous observation, from seq nr " + lastSeqNr);
 
                 while (true)
                 {
-
+                    // Do nothing
                 }
             }
         }
@@ -142,8 +157,12 @@ namespace taskwatcher_daemon
 
             Console.WriteLine("done - " + queryTask.Result.Count() + " tasks fetched");
 
-            Console.Write("Connecting to " + DB + "...");
+            if (queryTask.Result.Count() == 0)
+            {
+                return;
+            }
 
+            Console.Write("Connecting to " + DB + "...");
             OracleConnection conn = null;
 
             try
@@ -178,7 +197,7 @@ namespace taskwatcher_daemon
                 Debug.WriteLine(cmd.CommandText);
                 OracleDataReader reader = cmd.ExecuteReader();
 
-                Console.WriteLine("done - returned " + reader.RecordsAffected + " rows");
+                Console.WriteLine("done");
 
                 while (reader.Read())
                 {
@@ -213,6 +232,15 @@ namespace taskwatcher_daemon
                 store.StoreAsync<ADAITask>(row.IncludedDoc).Wait();
                 Console.WriteLine("done");
             }
+
+            GetChangesRequest getChangesRequest = new GetChangesRequest
+            {
+                Feed = ChangesFeed.Normal
+            };
+
+            Task<ChangesResponse> changesTask = store.Client.Changes.GetAsync(getChangesRequest);
+            changesTask.Wait();
+            changeObserver.SetIgnoreUntilSeqNr(changesTask.Result.LastSeq);
         }
 
         static IDbConnection ProxyDbConnection(ConnectionInfo connInfo)
