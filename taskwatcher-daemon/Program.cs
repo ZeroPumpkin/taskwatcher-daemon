@@ -15,7 +15,7 @@ namespace taskwatcher_daemon
 {
     class Program
     {
-        const int TIMER_PERIOD = 30 * 1000 * 60;
+        const int TIMER_PERIOD = 10 * 1000 * 60;
         const string DB = "dev1.avaloq";
 
         static Timer workTimer = null;
@@ -52,8 +52,8 @@ namespace taskwatcher_daemon
                 Timeout = TimeSpan.FromMilliseconds(System.Threading.Timeout.Infinite)
             };
 
-            MyCouchClientBootstrapper bootstrapper = new MyCouchClientBootstrapper();
-            bootstrapper.DbConnectionFn = new Func<ConnectionInfo, IDbConnection>(ProxyDbConnection);
+            //MyCouchClientBootstrapper bootstrapper = new MyCouchClientBootstrapper();
+            //bootstrapper.DbConnectionFn = new Func<ConnectionInfo, IDbConnection>(ProxyDbConnection);
 
             using (MyCouchClient couch = new MyCouchClient(connInfo))
             {
@@ -61,6 +61,16 @@ namespace taskwatcher_daemon
 
                 // Create the database if it does not exist
                 couch.Database.PutAsync().Wait();
+
+                Task<DocumentHeaderResponse> headTask = couch.Documents.HeadAsync("_design/tasks");
+                headTask.Wait();
+
+                // Create design document with tasks view
+                if (!headTask.Result.IsSuccess)
+                {
+                    string taskDesignDoc = "{ \"language\": \"javascript\", \"views\": { \"tasks\": { \"map\": \"function(doc) { if (doc.$doctype != 'adaiTask') return; emit(doc._id, { 'rev': doc._rev }); }\" } } }";
+                    couch.Documents.PutAsync("_design/tasks", taskDesignDoc).Wait();
+                }
 
                 Console.WriteLine("exists");
 
@@ -83,33 +93,31 @@ namespace taskwatcher_daemon
                 //    }
                 //}
 
-                // First get the changes feed to get the last seq nr
-                GetChangesRequest getChangesRequest = new GetChangesRequest
-                {
-                    Feed = ChangesFeed.Normal
-                };
+                //// First get the changes feed to get the last seq nr
+                //GetChangesRequest getChangesRequest = new GetChangesRequest
+                //{
+                //    Feed = ChangesFeed.Normal
+                //};
 
-                Task<ChangesResponse> changesTask = couch.Changes.GetAsync(getChangesRequest);
-                changesTask.Wait();
-                string lastSeqNr = changesTask.Result.LastSeq;
-
-                MyCouchStore store = new MyCouchStore(couch);
+                //Task<ChangesResponse> changesTask = couch.Changes.GetAsync(getChangesRequest);
+                //changesTask.Wait();
+                //string lastSeqNr = changesTask.Result.LastSeq;
 
                 // Start timer - callback is called immediately
-                workTimer = new Timer(WorkTimerCallback, store, 0, TIMER_PERIOD);
+                workTimer = new Timer(WorkTimerCallback, couch, 0, TIMER_PERIOD);
                 
-                // Now start continuous observation using the last seq nr
-                getChangesRequest = new GetChangesRequest
-                {
-                    Feed = ChangesFeed.Continuous,
-                    Since = lastSeqNr
-                };
-                CancellationToken cancellationToken = new CancellationToken();
-                IObservable<string> changes = couch.Changes.ObserveContinuous(getChangesRequest, cancellationToken);
+                //// Now start continuous observation using the last seq nr
+                //getChangesRequest = new GetChangesRequest
+                //{
+                //    Feed = ChangesFeed.Continuous,
+                //    Since = lastSeqNr
+                //};
+                //CancellationToken cancellationToken = new CancellationToken();
+                //IObservable<string> changes = couch.Changes.ObserveContinuous(getChangesRequest, cancellationToken);
 
-                changeObserver = new ChangeObserver(workTimer, TIMER_PERIOD);
-                changes.Subscribe(changeObserver);
-                Debug.WriteLine("Started continuous observation, from seq nr " + lastSeqNr);
+                //changeObserver = new ChangeObserver(workTimer, TIMER_PERIOD);
+                //changes.Subscribe(changeObserver);
+                //Debug.WriteLine("Started continuous observation, from seq nr " + lastSeqNr);
 
                 while (true)
                 {
@@ -144,20 +152,17 @@ namespace taskwatcher_daemon
 
         static void WorkTimerCallback(object state)
         {
-            MyCouchStore store = (MyCouchStore) state;
+            MyCouchClient couch = (MyCouchClient) state;
 
             Console.Write("Polling tasklist...");
 
-            // Get all docs
-            Query q = new Query("_all_docs");
-            q.IncludeDocs = true;
-            Task<IEnumerable<Row<string, ADAITask>>> queryTask = store.QueryAsync<string, ADAITask>(q);
+            QueryViewRequest req = new QueryViewRequest("tasks", "tasks").Configure(q => q.IncludeDocs(true));
+            Task<ViewQueryResponse<string, ADAITask>> queryTask = couch.Views.QueryAsync<string, ADAITask>(req);
             queryTask.Wait();
-            IEnumerable<Row<string, ADAITask>> rows = queryTask.Result;
 
-            Console.WriteLine("done - " + queryTask.Result.Count() + " tasks fetched");
+            Console.WriteLine("done - " + queryTask.Result.TotalRows + " tasks fetched");
 
-            if (queryTask.Result.Count() == 0)
+            if (queryTask.Result.TotalRows == 0)
             {
                 return;
             }
@@ -178,7 +183,7 @@ namespace taskwatcher_daemon
                 Console.WriteLine("done");
 
                 string inClause = "";
-                foreach (Row<string, ADAITask> row in rows)
+                foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
                 {
                     inClause = inClause + row.IncludedDoc.TaskID + ",";
                 }
@@ -201,14 +206,14 @@ namespace taskwatcher_daemon
 
                 while (reader.Read())
                 {
-                    Row<string, ADAITask> t = rows.Where(e => e.IncludedDoc.TaskID == reader.GetInt32(0)).Single();
-                    t.IncludedDoc.TaskName = reader.GetString(1);
-                    t.IncludedDoc.TaskStatus = reader.GetString(2);
-                    t.IncludedDoc.TaskRelease = reader.GetString(3);
-                    t.IncludedDoc.LastUpdated = DateTime.Now;
+                    ADAITask t = queryTask.Result.Rows.Where(e => e.IncludedDoc.TaskID == reader.GetInt32(0)).Single().IncludedDoc;
+                    t.TaskName = reader.GetString(1);
+                    t.TaskStatus = reader.GetString(2);
+                    t.TaskRelease = reader.GetString(3);
+                    t.LastUpdated = DateTime.Now;
 
-                    Debug.WriteLine("Task ID: " + t.IncludedDoc.TaskID + ", Task Name: " + t.IncludedDoc.TaskName + ", Task Status: " + t.IncludedDoc.TaskStatus +
-                        ", Task Release: " + t.IncludedDoc.TaskRelease);
+                    Debug.WriteLine("Task ID: " + t.TaskID + ", Task Name: " + t.TaskName + ", Task Status: " + t.TaskStatus +
+                        ", Task Release: " + t.TaskRelease);
                 }
 
                 reader.Close();
@@ -226,21 +231,24 @@ namespace taskwatcher_daemon
                 }
             }
 
-            foreach (Row<string, ADAITask> row in rows)
+            MyCouchStore store = new MyCouchStore(couch);
+
+            foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
             {
                 Console.Write("Updating doc for task " + row.IncludedDoc.TaskID + "...");
-                store.StoreAsync<ADAITask>(row.IncludedDoc).Wait();
+                Task<ADAITask> t = store.StoreAsync<ADAITask>(row.IncludedDoc);
+                t.Wait();
                 Console.WriteLine("done");
             }
 
-            GetChangesRequest getChangesRequest = new GetChangesRequest
-            {
-                Feed = ChangesFeed.Normal
-            };
+            //GetChangesRequest getChangesRequest = new GetChangesRequest
+            //{
+            //    Feed = ChangesFeed.Normal
+            //};
 
-            Task<ChangesResponse> changesTask = store.Client.Changes.GetAsync(getChangesRequest);
-            changesTask.Wait();
-            changeObserver.SetIgnoreUntilSeqNr(changesTask.Result.LastSeq);
+            //Task<ChangesResponse> changesTask = store.Client.Changes.GetAsync(getChangesRequest);
+            //changesTask.Wait();
+            //changeObserver.SetIgnoreUntilSeqNr(changesTask.Result.LastSeq);
         }
 
         static IDbConnection ProxyDbConnection(ConnectionInfo connInfo)
