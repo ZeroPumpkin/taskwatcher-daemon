@@ -89,6 +89,7 @@
   <ItemGroup>
     <Compile Include="ADAITask.cs" />
     <Compile Include="ChangeObserver.cs" />
+    <Compile Include="Settings.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ProxyConnection.cs" />

@@ -15,14 +15,13 @@ namespace taskwatcher_daemon
 {
     class Program
     {
-        const int TIMER_PERIOD = 10 * 1000 * 60;
+        const int TIMER_PERIOD = 60 * 1000 * 60;
         const string DB = "dev1.avaloq";
 
         static Timer workTimer = null;
         static string connString = null;
         static string username = null;
         static string password = null;
-        static ChangeObserver changeObserver = null;
 
         static void Main(string[] args)
         {
@@ -153,6 +152,25 @@ namespace taskwatcher_daemon
         static void WorkTimerCallback(object state)
         {
             MyCouchClient couch = (MyCouchClient) state;
+            List<ADAITask> taskList = new List<ADAITask>();
+
+            Console.Write("Getting settings...");
+            Task<GetEntityResponse<Settings>> settingsTask = couch.Entities.GetAsync<Settings>("settings");
+            settingsTask.Wait();
+
+            Settings settings;
+
+            if (settingsTask.Result.IsSuccess)
+            {
+                settings = settingsTask.Result.Content;
+                Console.WriteLine("done");
+            } 
+            else
+            {
+                settings = new Settings();
+                Console.WriteLine("error - using defaults");
+            }
+            Console.WriteLine("Current settings: autoWatch = " + settings.autoWatch);
 
             Console.Write("Polling tasklist...");
 
@@ -162,8 +180,9 @@ namespace taskwatcher_daemon
 
             Console.WriteLine("done - " + queryTask.Result.TotalRows + " tasks fetched");
 
-            if (queryTask.Result.TotalRows == 0)
+            if (queryTask.Result.TotalRows == 0 && !settings.autoWatch)
             {
+                Console.WriteLine("Finished! Waiting for next polling interval...");
                 return;
             }
 
@@ -189,14 +208,27 @@ namespace taskwatcher_daemon
                 }
                 inClause = inClause.TrimEnd(',');
 
+                if (inClause == "") inClause = "null";
+
                 OracleCommand cmd = new OracleCommand();
                 cmd.Connection = conn;
                 cmd.CommandType = System.Data.CommandType.Text;
-                cmd.CommandText = "select env_task.id, env_task.name, env_wfc_status.name, env_release.user_id " +
-                                  "from e.env_task, e.env_wfc_status, e.env_release " +
-                                  "where env_task.id in (" + inClause + ") " +
-                                  "  and env_task.env_wfc_status_id = env_wfc_status.id " +
-                                  "  and env_task.env_release_id = env_release.id";
+                string q = "select env_task.id, env_task.name, env_wfc_status.name, env_release.user_id " +
+                                  "from e.env_task, e.env_wfc_status, e.env_release, env_user " +
+                                  "where env_task.env_wfc_status_id = env_wfc_status.id " +
+                                  "  and env_task.env_release_id = env_release.id" + 
+                                  "  and env_task.resp_env_user_id = env_user.id" +
+                                  "  and (env_task.id in (" + inClause + ")";
+
+                // Also include new tasks not already watched?
+                if (settings.autoWatch)
+                {
+                    q += "  or env_user.oracle_user = '" + username.ToUpper() + "'" +
+                         "  and env_task.env_wfc_status_id in (2018 /* Integration Test Running */, 2007 /* Closed for Audit */)";
+                }
+                q += ")";
+                
+                cmd.CommandText = q;
                 Console.Write("Running query...");
 
                 Debug.WriteLine(cmd.CommandText);
@@ -204,9 +236,24 @@ namespace taskwatcher_daemon
 
                 Console.WriteLine("done");
 
+                foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
+                {
+                    taskList.Add(row.IncludedDoc);
+                }
+
                 while (reader.Read())
                 {
-                    ADAITask t = queryTask.Result.Rows.Where(e => e.IncludedDoc.TaskID == reader.GetInt32(0)).Single().IncludedDoc;
+                    ADAITask t = null;
+
+                    if (taskList.Exists(m => m.TaskID == reader.GetInt32(0)))
+                    {
+                        t = queryTask.Result.Rows.Where(e => e.IncludedDoc.TaskID == reader.GetInt32(0)).Single().IncludedDoc;
+                    }
+                    else
+                    {
+                        t = new ADAITask(reader.GetInt32(0));
+                        taskList.Add(t);
+                    }
                     t.TaskName = reader.GetString(1);
                     t.TaskStatus = reader.GetString(2);
                     t.TaskRelease = reader.GetString(3);
@@ -220,7 +267,7 @@ namespace taskwatcher_daemon
             }
             catch (OracleException e)
             {
-                Console.Error.WriteLine(e.Message);
+                Console.WriteLine(e.Message);
                 return;
             }
             finally
@@ -233,13 +280,15 @@ namespace taskwatcher_daemon
 
             MyCouchStore store = new MyCouchStore(couch);
 
-            foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
+            foreach (ADAITask t in taskList)
             {
-                Console.Write("Updating doc for task " + row.IncludedDoc.TaskID + "...");
-                Task<ADAITask> t = store.StoreAsync<ADAITask>(row.IncludedDoc);
-                t.Wait();
+                Console.Write("Updating doc for task " + t.TaskID + "...");
+                Task<ADAITask> storeTask = store.StoreAsync<ADAITask>(t);
+                storeTask.Wait();
                 Console.WriteLine("done");
             }
+
+            Console.WriteLine("Finished! Waiting for next polling interval...");
 
             //GetChangesRequest getChangesRequest = new GetChangesRequest
             //{
