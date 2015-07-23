@@ -201,34 +201,60 @@ namespace taskwatcher_daemon
 
                 Console.WriteLine("done");
 
-                string inClause = "";
-                foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
-                {
-                    inClause = inClause + row.IncludedDoc.TaskID + ",";
-                }
-                inClause = inClause.TrimEnd(',');
-
-                if (inClause == "") inClause = "null";
-
                 OracleCommand cmd = new OracleCommand();
                 cmd.Connection = conn;
                 cmd.CommandType = System.Data.CommandType.Text;
-                string q = "select env_task.id, env_task.name, env_wfc_status.name, env_release.user_id " +
-                                  "from e.env_task, e.env_wfc_status, e.env_release, env_user " +
-                                  "where env_task.env_wfc_status_id = env_wfc_status.id " +
-                                  "  and env_task.env_release_id = env_release.id" + 
-                                  "  and env_task.resp_env_user_id = env_user.id" +
-                                  "  and (env_task.id in (" + inClause + ")";
+
+                // Copy task IDs to a list that we then use in an OracleParameter for the IN clause
+                foreach (ViewQueryResponse<string, ADAITask>.Row row in queryTask.Result.Rows)
+                {
+                    //taskIdList.Add(row.IncludedDoc.TaskID);
+                    OracleParameter par = new OracleParameter(":t" + cmd.Parameters.Count, OracleDbType.Int32);
+                    par.Value = row.IncludedDoc.TaskID;
+
+                    cmd.Parameters.Add(par);
+                }
+
+                StringBuilder inClause = new StringBuilder();
+                foreach (OracleParameter par in cmd.Parameters)
+                {
+                    inClause.AppendFormat("{0},", par.ParameterName);
+                }
+
+                if (inClause.Length > 0)
+                {
+                    inClause.Remove(inClause.Length - 1, 1); // Remove trailing comma
+                }
+                else
+                {
+                    inClause.Append("null");
+                }
+
+                StringBuilder q = new StringBuilder();
+                q.AppendLine("select env_task.id, env_task.name, env_wfc_status.name, env_release.user_id");
+                q.AppendLine("  from e.env_task, e.env_wfc_status, e.env_release, env_user");
+                q.AppendLine(" where env_task.env_wfc_status_id = env_wfc_status.id");
+                q.AppendLine("   and env_task.env_release_id = env_release.id");
+                q.AppendLine("   and env_task.resp_env_user_id = env_user.id");
+                q.AppendFormat("   and (env_task.id in ({0})", inClause);
+                q.AppendLine();
 
                 // Also include new tasks not already watched?
                 if (settings.autoWatch)
                 {
-                    q += "  or env_user.oracle_user = '" + username.ToUpper() + "'" +
-                         "  and env_task.env_wfc_status_id in (2018 /* Integration Test Running */, 2007 /* Closed for Audit */)";
+                    OracleParameter parUser = new OracleParameter();
+                    parUser.OracleDbType = OracleDbType.Varchar2;
+                    parUser.ParameterName = ":oracle_user";
+                    parUser.Value = username.ToUpper();
+                    cmd.Parameters.Add(parUser);
+
+                    q.AppendFormat("    or env_user.oracle_user = {0}", parUser.ParameterName);
+                    q.AppendLine();
+                    q.AppendLine("   and env_task.env_wfc_status_id in (2018 /* Integration Test Running */, 2015 /* Ready to Integrate */)");
                 }
-                q += ")";
-                
-                cmd.CommandText = q;
+                q.AppendLine(")");
+
+                cmd.CommandText = q.ToString();
                 Console.Write("Running query...");
 
                 Debug.WriteLine(cmd.CommandText);
